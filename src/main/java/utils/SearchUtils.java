@@ -22,50 +22,74 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Singleton
-public class SearchUtils {
-	private static final StandardAnalyzer analyzer = new StandardAnalyzer();
-	private static final Directory index = new ByteBuffersDirectory();
-
+public final class SearchUtils {
 	private static final Logger LOG = Logger.getLogger(SearchUtils.class);
 
-	private SearchUtils() {}
+	private static final Directory index = new ByteBuffersDirectory();
+	private static StandardAnalyzer analyzer;
+	private static IndexWriter writer;
 
-	public static void index(List<Book> records) {
-		var config = new IndexWriterConfig(analyzer);
+	private SearchUtils() {
+	}
 
-		try (var w = new IndexWriter(index, config)) {
-			w.deleteAll();
-			w.commit();
+	private static void initializeWriter() {
+		try {
+			analyzer = new StandardAnalyzer();
+			var config = new IndexWriterConfig(analyzer);
+			writer = new IndexWriter(index, config);
+		} catch (IOException e) {
+			LOG.error("Error while initializing lucene");
+		}
+	}
+
+	private static void closeWriter() {
+		try {
+			writer.close();
+		} catch (IOException e) {
+			LOG.errorf("Error closing index: %s", e.getMessage(), e);
+		}
+	}
+
+	public static void index(Iterable<Book> records) {
+		try {
+			initializeWriter();
+			writer.deleteAll();
+			writer.commit();
 
 			for (var r : records) {
 				var doc = new Document();
 				doc.add(new TextField("title", r.title(), Field.Store.YES));
 				doc.add(new StringField("isbn", r.isbn(), Field.Store.YES));
-				w.addDocument(doc);
+				writer.addDocument(doc);
 			}
 		} catch (IOException e) {
 			LOG.errorf("Error indexing records: %s", e.getMessage(), e);
+		} finally {
+			closeWriter();
 		}
 	}
 
 	public static List<Book> search(String queryString) {
 		var documents = new ArrayList<Book>();
 		try {
+			initializeWriter();
 			var q = new QueryParser("title", analyzer).parse(queryString);
-			var reader = DirectoryReader.open(index);
+			var reader = DirectoryReader.open(writer);
 			var searcher = new IndexSearcher(reader);
 			var docs = searcher.search(q, 10);
 			var hits = docs.scoreDocs;
 			var storeFields = searcher.storedFields();
 
 			LOG.infof("Found %d hits", hits.length);
-			for (org.apache.lucene.search.ScoreDoc hit : hits) {
+			for (var hit : hits) {
 				int docId = hit.doc;
 				var d = storeFields.document(docId);
 				documents.add(new Book(d.get("title"), d.get("isbn")));
 			}
 		} catch (IOException | ParseException e) {
 			LOG.errorf("Error searching for query \"%s\": %s", queryString, e.getMessage(), e);
+		} finally {
+			closeWriter();
 		}
 
 		return documents;
